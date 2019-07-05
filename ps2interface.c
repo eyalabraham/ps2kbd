@@ -69,8 +69,7 @@
  * Note: all references to data sheet are for ATmega 328P Rev. 8161D–AVR–10/09
  *
  * TODO:
- * 1) add watch-dog to reset system if stuck in receive or send due to bad PS2 clocking
- * 2) keyboard error handling and recovery
+ * 1) keyboard error handling and recovery
  *
  */
 
@@ -236,19 +235,10 @@ int main(void)
     ioinit();
 
     // Wait enough time for keyboard to complete self test
-    _delay_ms(2000);
+    _delay_ms(1000);
 
     // Wait for PC to be ready and then enable interrupts
     do {} while ( PINC & PC_BUSY );
-    sei();
-
-    /* Start watch-dog timer here after PC is done with RAM test, and keyboard is enabled.
-     * Any reset, power-on or watch-dog, will disable the watch-dog, so the enable at this point will
-     * not cause a repeat reset by the watch-dog while RAM test is running on the PC.
-     * This time out allows the keyboard interrupt to run up to 500mSec on the PC (BUSY line asserted),
-     * or provides the PC a way to reset the keyboard by asserting the BUSY line for more than 500mSec.
-     */
-    //wdt_enable (WDTO_500MS);
 
     // light LEDs in succession
     kbd_test_led();
@@ -267,6 +257,15 @@ int main(void)
     kbd_lock_keys = PS2_HK_NUMLOCK;
 */
 
+    /* Start watch-dog timer here after PC is done with RAM test, and keyboard is enabled.
+     * Any reset, power-on or watch-dog, will disable the watch-dog, so the enable at this point will
+     * not cause a repeat reset by the watch-dog while RAM test is running on the PC.
+     * This time out allows the keyboard interrupt to run up to 500mSec on the PC (BUSY line asserted),
+     * or provides the PC a way to reset the keyboard by asserting the BUSY line for more than 500mSec.
+     */
+    wdt_enable(WDTO_500MS);
+    sei();
+
     // loop forever
     while ( 1 )
     {
@@ -277,7 +276,7 @@ int main(void)
              * and AVR will reset; such as the case when PC is rebooted, hung, or trying
              * to reset the keyboard by asserting the BUSY line.
              */
-            //wdt_reset();
+            wdt_reset();
 
             scan_code = ps2_recv();
 
@@ -563,17 +562,27 @@ void kbd_test_led(void)
 {
     kdb_led_ctrl(PS2_HK_SCRLOCK);
 
-    _delay_ms(1000);
+    _delay_ms(750);
 
     kdb_led_ctrl(0);
     kdb_led_ctrl(PS2_HK_CAPSLOCK);
 
-    _delay_ms(1000);
+    _delay_ms(750);
 
     kdb_led_ctrl(0);
     kdb_led_ctrl(PS2_HK_NUMLOCK);
 
-    _delay_ms(1000);
+    _delay_ms(750);
+
+    kdb_led_ctrl(0);
+    kdb_led_ctrl(PS2_HK_CAPSLOCK);
+
+    _delay_ms(750);
+
+    kdb_led_ctrl(0);
+    kdb_led_ctrl(PS2_HK_SCRLOCK);
+
+    _delay_ms(750);
 
     kdb_led_ctrl(0);
 }
