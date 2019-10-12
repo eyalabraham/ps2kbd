@@ -562,27 +562,27 @@ void kbd_test_led(void)
 {
     kdb_led_ctrl(PS2_HK_SCRLOCK);
 
-    _delay_ms(750);
+    _delay_ms(200);
 
     kdb_led_ctrl(0);
     kdb_led_ctrl(PS2_HK_CAPSLOCK);
 
-    _delay_ms(750);
+    _delay_ms(200);
 
     kdb_led_ctrl(0);
     kdb_led_ctrl(PS2_HK_NUMLOCK);
 
-    _delay_ms(750);
+    _delay_ms(200);
 
     kdb_led_ctrl(0);
     kdb_led_ctrl(PS2_HK_CAPSLOCK);
 
-    _delay_ms(750);
+    _delay_ms(200);
 
     kdb_led_ctrl(0);
     kdb_led_ctrl(PS2_HK_SCRLOCK);
 
-    _delay_ms(750);
+    _delay_ms(200);
 
     kdb_led_ctrl(0);
 }

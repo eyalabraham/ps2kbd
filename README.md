@@ -1,5 +1,5 @@
 # PS2 keyboard interface for PC-XT
-This program is the interface code for AVR with a PS2 keyboard. It implements a PS2 keyboard interface and an PC-XT parallel interface. The AVR connects directly into the PC-XT 8255 PPI Port A, bypassing the serial XT keyboard interface. The code configures the keyboard, accepts scan codes, converts the AT scan codes to XT keyboard caode, and transferres the XT code to the PC.
+This program is the interface code for AVR with a PS2 keyboard. It implements a PS2 keyboard interface and an PC-XT parallel interface. The AVR connects directly into the PC-XT 8255 PPI Port A, bypassing the serial XT keyboard interface. The code configures the keyboard, accepts scan codes, converts the AT scan codes to XT keyboard codes, and transfers the XT code to the PC.
 The AVR to PC-XT interface is a parallel interface that uses two handshake signals: a data ready signal into the PC's IRQ1 keyboard interrupt line, and a busy/ready signal from the PC to the AVR.
 
 ## Resources:
