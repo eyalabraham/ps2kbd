@@ -14,6 +14,8 @@
  *  |     |               |     |
  *  |     +---< PC1 ]-----+     |
  *  |     |               |     |
+ *  |     +---[ PC2 >-----+     |
+ *  |     |               |     |
  *  +-----+               +-----+
  *
  *
@@ -23,8 +25,11 @@
  * |---------------|------|-------------|-----------------------|
  * | PS2 clock     | PB0  | 14          | in/out w/ pull up     |
  * | PS2 data      | PB1  | 15          | in/out w/ pull up     |
- * | PC status     | PC0  | 23          | PC Busy / KDB Enable  |
+ * | PC KBD /OE    | PC0  | 23          | PC Busy / KDB Enable  |
  * | PC Interrupt  | PC1  | 24          | PC-XT IRQ1            |
+ * | PS KBD /CLK   | PC2  | 25          | KBD clock             |
+ * | Test point 1  | PC3  | 26          | In reset state        |
+ * | Test point 2  | PC4  | 27          | Keyboard code ready   |
  * | 8-bit data    | PD   | 2..6,11..13 | 8-bit Scan Code out   |
  *
  * Port B bit assignment
@@ -44,11 +49,11 @@
  *
  *  b7 b6 b5 b4 b3 b2 b1 b0
  *  |  |  |  |  |  |  |  |
- *  |  |  |  |  |  |  |  +--- 'i' PC-XT status input Busy=1 / Ready=0
+ *  |  |  |  |  |  |  |  +--- 'i' PC-XT status input, intr. ack.=1, ready/open=0
  *  |  |  |  |  |  |  +------ 'o' PC-XT IRQ1 interrupt request
- *  |  |  |  |  |  +--------- 'i'
- *  |  |  |  |  +------------ 'i'
- *  |  |  |  +--------------- 'i'
+ *  |  |  |  |  |  +--------- 'i' PC-XT keyboard clock, not-ready/reset=0, ready=1
+ *  |  |  |  |  +------------ 'o' Test point: 1=reset state from PC / 0=normal run
+ *  |  |  |  +--------------- 'o' Test point: 1=code waiting to be read by PC / 0=no code (after read-ack by PC)
  *  |  |  +------------------ 'i'
  *  |  +--------------------- 'i'
  *  +------------------------ 'i'
@@ -66,8 +71,11 @@
  *  |  +--------------------- 'o' |
  *  +------------------------ 'o'/
  *
- * Note: all references to data sheet are for ATmega 328P Rev. 8161D–AVR–10/09
- *
+ * Notes:
+ *  All references to data sheet are for ATmega 328P Rev. 8161D–AVR–10/09.
+ *  PD is initialized as input because PC-XT clone outputs POST codes on its PPI PA
+ *  during initial boot.
+ * 
  * TODO:
  * 1) keyboard error handling and recovery
  *
@@ -78,7 +86,6 @@
 
 #include    <avr/io.h>
 #include    <avr/interrupt.h>
-#include    <avr/wdt.h>
 #include    <util/delay.h>
 
 // IO ports B, C, and D initialization
@@ -86,11 +93,11 @@
 #define     PB_PUP_INIT     0x03    // port input pin pull-up
 #define     PB_INIT         0x00    // port initial values
 
-#define     PC_DDR_INIT     0x02
+#define     PC_DDR_INIT     0b00011010
 #define     PC_PUP_INIT     0x00
 #define     PC_INIT         0x00
 
-#define     PD_DDR_INIT     0xff
+#define     PD_DDR_INIT     0x00
 #define     PD_PUP_INIT     0x00
 #define     PD_INIT         0x00
 
@@ -104,8 +111,13 @@
 #define     PS2_DATA        0x02
 
 // PC control line masks
-#define     PC_BUSY         0x01
-#define     PC_IRQ          0x02
+#define     PC_ACK          0b00000001
+#define     PC_IRQ          0b00000010
+#define     PC_RESET        0b00000100
+
+// test point masks
+#define     TP1_RST_STATE   0b00001000
+#define     TP2_CODE_RDY    0b00010000
 
 // buffers
 #define     PS2_BUFF_SIZE   32
@@ -173,19 +185,9 @@ typedef enum
     PC_KBD_READY        // only when PC1 (PC IRQ1)='0' and PC0 (PC ready.busy)='1'
 } pc_state_t;
 
-/* | PC0 | PC1 |   pc_state_t   |                       state                   |
- * |-----|-----|----------------|-----------------------------------------------|
- * |  0  |  0  | PC_KBD_READY   | Starting state, PC is ready and IRQ not set   |
- * |  0  |  1  | PC_KBD_BUSY    | AVR placed a scan code and asserted IRQ       |
- * |  1  |  1  | PC_KBD_BUSY    | AVR's IRQ was acknowledged                    |
- * |  1  |  0  | PC_KBD_BUSY    | AVR's IRQ cleared, PC processing scan code    |
- * |  0  |  0  | PC_KBD_READY   | Starting state, PC completed code processing  |
- *
- */
 /****************************************************************************
   Function prototypes
 ****************************************************************************/
-void    reset(void) __attribute__((naked)) __attribute__((section(".init3")));
 void    ioinit(void);
 
 int     ps2_send(uint8_t);
@@ -197,9 +199,7 @@ int     kdb_led_ctrl(uint8_t);
 int     kbd_code_set(int);
 int     kbd_typematic_set(uint8_t);
 
-int     pc_is_kbd_ready();
-void    pc_set_irq(void);
-void    pc_clear_irq(void);
+void    pc_reset_state(void);
 
 /****************************************************************************
   Globals
@@ -231,53 +231,29 @@ int main(void)
     int     scan_code;
     uint8_t kdb_lock_state = 0;
 
-    // Initialize IO devices
     ioinit();
 
-    // Wait enough time for keyboard to complete self test
+    /* Wait enough time for keyboard to complete self test
+     */
     _delay_ms(1000);
 
-    // Wait for PC to be ready and then enable interrupts
-    do {} while ( PINC & PC_BUSY );
-
-    // light LEDs in succession
-    kbd_test_led();
-
-    // set typematic delay and rate
-    kbd_typematic_set(PS2_HK_TYPEMAT);
-
-    // change code set to "1" so code set translation does not needs to take place on the AVR
-    kbd_code_set(1);
-
-    // initialize the system with a fake NumLock on code to the PC
-/*
-    ps2_scan_codes[0] = PS2_SCAN_NUM;
-    ps2_buffer_in = 1;
-    ps2_scan_code_count = 1;
-    kbd_lock_keys = PS2_HK_NUMLOCK;
-*/
-
-    /* Start watch-dog timer here after PC is done with RAM test, and keyboard is enabled.
-     * Any reset, power-on or watch-dog, will disable the watch-dog, so the enable at this point will
-     * not cause a repeat reset by the watch-dog while RAM test is running on the PC.
-     * This time out allows the keyboard interrupt to run up to 500mSec on the PC (BUSY line asserted),
-     * or provides the PC a way to reset the keyboard by asserting the BUSY line for more than 500mSec.
-     */
-    wdt_enable(WDTO_500MS);
     sei();
 
-    // loop forever
+    /* configure PS2 keyboard:
+     * set typematic delay and rate
+     * change code set to "1"
+     * flash LEDs
+     */
+    kbd_test_led();
+    kbd_typematic_set(PS2_HK_TYPEMAT);
+    kbd_code_set(1);
+
+    /* loop forever
+     */
     while ( 1 )
     {
-        if ( pc_is_kbd_ready() )
+        if ( (PINC & PC_RESET) == 0 )
         {
-            /* Reset the watch-dog here because we have a READY state from the PC,
-             * if PC is not ready for too long, this watch-dog reset will not happen
-             * and AVR will reset; such as the case when PC is rebooted, hung, or trying
-             * to reset the keyboard by asserting the BUSY line.
-             */
-            wdt_reset();
-
             scan_code = ps2_recv();
 
             /* Only pass make and break codes for keys in range 1 to 83
@@ -286,7 +262,7 @@ int main(void)
              * Discard PrtScrn E0,2A,E0,37 and E0,B7,E0,AA; my PC does not support print screen.
              * Convert E1 sequence of Pause/Break to scan code 54h/84
              */
-            if  ( scan_code != -1 )
+            if  ( scan_code != -1 && pc_state == PC_KBD_READY)
             {
                 // Handle 'E1' scan code case for Pause/Break key
                 // Translate sequence E1,1D,45,E1,9D,C5 to code 0x54
@@ -330,11 +306,14 @@ int main(void)
                     continue;
                 }
 
-                // Send code to PC
+                /* send code to PC and set the IRQ line
+                 */
                 PORTD = (uint8_t)scan_code;
-                pc_set_irq();
+                PORTC |= (PC_IRQ + TP2_CODE_RDY);
+                pc_state = PC_KBD_BUSY;
 
-                // Toggle keyboard lock status
+                /* Toggle keyboard lock status
+                 */
                 if ( scan_code == PS2_SCAN_SCROLL )
                     kbd_lock_keys ^= PS2_HK_SCRLOCK;
                 else if ( scan_code == PS2_SCAN_CAPS )
@@ -353,27 +332,13 @@ int main(void)
                 kdb_lock_state = kbd_lock_keys;
             }
         }
+        else
+        {
+            pc_reset_state();
+        }
     }
 
     return 0;
-}
-
-/* ----------------------------------------------------------------------------
- * reset()
- *
- *  Clear SREG_I on hardware reset.
- *  source: http://electronics.stackexchange.com/questions/117288/watchdog-timer-issue-avr-atmega324pa
- */
-void reset(void)
-{
-     cli();
-    // Note that for newer devices (any AVR that has the option to also
-    // generate WDT interrupts), the watchdog timer remains active even
-    // after a system reset (except a power-on condition), using the fastest
-    // prescaler value (approximately 15 ms). It is therefore required
-    // to turn off the watchdog early during program startup.
-    MCUSR = 0; // clear reset flags
-    wdt_disable();
 }
 
 /* ----------------------------------------------------------------------------
@@ -408,7 +373,7 @@ void ioinit(void)
 }
 
 /* ----------------------------------------------------------------------------
- * ps2_send_cmd()
+ * ps2_send()
  *
  *  Send a command to the PS2 keyboard
  *  1)   Bring the Clock line low for at least 100 microseconds.
@@ -552,38 +517,18 @@ int ps2_recv(void)
  * ps2_test_led()
  *
  *  Simple light test for keyboard LEDs.
- *  The function discards the keyboard's response;
- *  if something is wrong LEDs want light up in succession.
  *
  *  param:  none
  *  return: none
  */
 void kbd_test_led(void)
 {
-    kdb_led_ctrl(PS2_HK_SCRLOCK);
-
-    _delay_ms(200);
-
+    kdb_led_ctrl(PS2_HK_SCRLOCK+PS2_HK_NUMLOCK+PS2_HK_CAPSLOCK);
+    _delay_ms(250);
     kdb_led_ctrl(0);
-    kdb_led_ctrl(PS2_HK_CAPSLOCK);
-
-    _delay_ms(200);
-
-    kdb_led_ctrl(0);
-    kdb_led_ctrl(PS2_HK_NUMLOCK);
-
-    _delay_ms(200);
-
-    kdb_led_ctrl(0);
-    kdb_led_ctrl(PS2_HK_CAPSLOCK);
-
-    _delay_ms(200);
-
-    kdb_led_ctrl(0);
-    kdb_led_ctrl(PS2_HK_SCRLOCK);
-
-    _delay_ms(200);
-
+    _delay_ms(250);
+    kdb_led_ctrl(PS2_HK_SCRLOCK+PS2_HK_NUMLOCK+PS2_HK_CAPSLOCK);
+    _delay_ms(250);
     kdb_led_ctrl(0);
 }
 
@@ -672,50 +617,50 @@ int kbd_typematic_set(uint8_t configuration)
 
     return temp_scan_code;
 }
+
 /* ----------------------------------------------------------------------------
- * pc_is_kbd_ready()
+ * pc_reset_state()
  *
- *  Logic for determining if PC keyboard is ready to accept scan code.
- *
- *  param:  none
- *  return: '0'=not ready, '-1'=ready
- *
- */
-int pc_is_kbd_ready(void)
-{
-    return ((pc_state == PC_KBD_BUSY) ? 0 : -1);
-}
-/* ----------------------------------------------------------------------------
- * pc_set_irq()
- *
- *  Assert (set) the PC's IRQ1 line.
+ *  Called when PC keyboard circuitry forces a reset state by holding
+ *  the keyboard clock line low.
+ *  Detect this state by polling for PC.b2='1' (reset line from PC is inverted)
  *
  *  param:  none
  *  return: none
  *
  */
-void pc_set_irq(void)
+void pc_reset_state(void)
 {
-    // assert the interrupt line
-    PORTC |= PC_IRQ;
+    PORTC |= TP1_RST_STATE;
 
-    // mark PC as busy until the PC acknowledges the interrupt
-    pc_state = PC_KBD_BUSY;
-}
+    /* PD must be input as PC will drive
+     * its POST codes from the 8255 PPI.
+     */
+    DDRD  = PD_DDR_INIT;
+    PORTD = PD_INIT | PD_PUP_INIT;
 
-/* ----------------------------------------------------------------------------
- * pc_clear_irq()
- *
- *  Clear the PC's IRQ1 line.
- *
- *  param:  none
- *  return: none
- *
- */
-void pc_clear_irq(void)
-{
-    // clear the interrupt line
+    /* make sure we clear the IRQ line
+     */
     PORTC &= ~PC_IRQ;
+    
+    /* wait here for the reset condition to be removed
+     */
+    while ( PINC & PC_RESET ) {};
+
+    /* change PD back to output and return to
+     * keyboard code transmit loop
+     */
+    DDRD = ~PD_DDR_INIT;
+
+    /* wait for the keyboard circuit /OE to go low
+     * and place '0xAA' test code while raising the IRQ1 interrupt line.
+     */
+    while ( PINC & PC_ACK) {};
+    PORTD = 0xaa;
+    PORTC |= (PC_IRQ + TP2_CODE_RDY);
+    pc_state = PC_KBD_BUSY;
+
+    PORTC &= ~TP1_RST_STATE;
 }
 
 /* ----------------------------------------------------------------------------
@@ -805,23 +750,30 @@ ISR(PCINT0_vect)
 
 /* ----------------------------------------------------------------------------
  * This ISR will trigger when PC0 changes state.
- * PC0 is connected to the PC-XT busy/ready output, and signals when the PC
- * is busy (0) processing a scan code, and when it is ready (1) to accept a new code.
+ * PC0 is connected to the PC-XT /OE keyboard shift register output control,
+ * and signals when the PC enabling the register's output and pulses ~2.5uSec
+ * when the PC has read the scan code and ir resetting the register.
+ * We need to detect this pulse and use id as an acknowledgement to the PC reading the
+ * scan code so that we can reset the IRQ1 interrupt line.
+ * The interrupt will trigger on any change, so we need to act when it goes low to high.
+ * NB: would ben easier to use INT0 or INT1 lines but they are used for code output,
+ *     and swapping between PB and PD means loosing in-circuit programming.
  *
  */
 ISR(PCINT1_vect)
 {
-    if ( PINC & PC_BUSY )
+    /* any transition on this line can reset the IRQ line
+     * so do this first as quick as possible.
+     */
+    PORTC &= ~PC_IRQ;
+
+    /* if the line also transitioned to '0' then this means that
+     * the PC is free to accept a scan code.
+     */
+    if ( (PINC & PC_ACK) == 0 )
     {
-        // this might be redundant, but safe
-        pc_state = PC_KBD_BUSY;
-        // PC acknowledged the interrupt, but still processing the scan code
-        // we can clear the request
-        pc_clear_irq();
-    }
-    else
-    {
-        // PC acknowledged the interrupt and finished processing the scan code
+        PORTD = 0;
+        PORTC &= ~TP2_CODE_RDY;
         pc_state = PC_KBD_READY;
     }
 }
