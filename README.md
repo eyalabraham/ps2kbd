@@ -1,7 +1,7 @@
 # PS2 keyboard interface for PC-XT
 
-This program is the interface code for AVR with a PS2 keyboard. It implements a PS2 keyboard interface and an PC-XT parallel interface. The AVR connects directly into the PC-XT 8255 PPI Port A, bypassing the serial XT keyboard interface. The code configures the keyboard, accepts scan codes, converts the AT scan codes to XT keyboard codes, and transfers the XT code to the PC.
-The AVR to PC-XT interface is a parallel interface that uses two handshake signals: a data ready signal into the PC's IRQ1 keyboard interrupt line, and a busy/ready signal from the PC to the AVR.
+This program is the interface code for AVR with a PS2 keyboard. It implements a PS2 keyboard interface and an PC-XT parallel interface. The AVR connects directly into the PC-XT 8255 PPI Port A replacing the shift register output bits, bypassing the serial XT keyboard interface. The code configures the keyboard, accepts scan codes, converts the AT scan codes to XT keyboard codes, and transfers the XT code to the PC.
+The AVR to PC-XT interface is a parallel interface that uses two handshake signals and conforms to working with the original PC/XT clone's BIOS.
 
 ## Resources
 
@@ -19,16 +19,17 @@ Schematics of the AVR board as well as a small hack that needs to be done on the
 The general connectivity is as follows:
 
 ```
-    PC                    AVR
- +------+               +-----+
- |      |               |     |
- | DATA +--< PD0..7 ]---+     |
- |      |               |     |
- |  ^OE +---[ PC0 >-----+     +---> PS2 keyboard
- |      |               |     |
- | IRQ1 +---< PC1 ]-----+     |
- |      |               |     |
- +------+               +-----+
+   +-----+               +-----+
+   |     |               |     |
+   |     +--< PD0..7 ]---+     |
+   | PC  |               | AVR |
+   |     +---[ PC0 >-----+     +---> PS2 keyboard
+   |     |               |     |
+   |     +---< PC1 ]-----+     |
+   |     |               |     |
+   |     +---[ PC2 >-----+     |
+   |     |               |     |
+   +-----+               +-----+
 ```
 
 ### ATmega AVR IO
@@ -37,8 +38,11 @@ The general connectivity is as follows:
 |---------------|------|-------------|-----------------------|
 | PS2 clock     | PB0  | 14          | in/out w/ pull up     |
 | PS2 data      | PB1  | 15          | in/out w/ pull up     |
-| PC status     | PC0  | 23          | PC Busy / KDB Enable  |
+| PC KBD /OE    | PC0  | 23          | PC Busy / KDB Enable  |
 | PC Interrupt  | PC1  | 24          | PC-XT IRQ1            |
+| PS KBD /CLK   | PC2  | 25          | KBD clock             |
+| Test point 1  | PC3  | 26          | In reset state        |
+| Test point 2  | PC4  | 27          | Keyboard code ready   |
 | 8-bit data    | PD   | 2..6,11..13 | 8-bit Scan Code out   |
 
 ## Scan code processing
