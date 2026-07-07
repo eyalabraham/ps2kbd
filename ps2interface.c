@@ -344,17 +344,22 @@ int main(void)
 /* ----------------------------------------------------------------------------
  * ioinit()
  *
- *  initialize IO interfaces
- *  timer and data rates calculated based on 4MHz internal clock
+ *  In this function initialize IO interfaces.
+ *  Since this function runonce at startup, also monitor keyboard
+ *  control signals and respond to PC-XT BIOS with expected token
+ *  and interrupt signalling.
  *
  */
 void ioinit(void)
 {
-    // Reconfigure system clock scaler to 8MHz
-    CLKPR = 0x80;   // change clock scaler (sec 8.12.2 p.37)
+    /* Reconfigure system clock scaler to 8MHz
+     * change clock scaler (sec 8.12.2 p.37)
+     */
+    CLKPR = 0x80;
     CLKPR = 0x00;
 
-    // initialize general IO PB and PD pins
+    /* Initialize general IO PB, PC, and PD pins
+     */
     DDRB  = ~PB_DDR_INIT;
     PORTB = PB_INIT;
     DDRB  = PB_DDR_INIT;
@@ -366,7 +371,26 @@ void ioinit(void)
     DDRD  = PD_DDR_INIT;
     PORTD = PD_INIT | PD_PUP_INIT;
 
-    // pin change interrupt setting
+    /* Wait here for the power-on reset condition to be removed
+     * by monitoring BIOS POST code progress and then the keyboard reset state
+     */
+    while ( PIND < 7 ) {};
+    while ( PINC & PC_RESET ) {};
+
+    /* Change PD back to output
+     */
+    DDRD = ~PD_DDR_INIT;
+
+    /* Wait for the keyboard circuit /OE to go low
+     * and place '0xAA' test code while raising the IRQ1 interrupt line.
+     */
+    while ( PINC & PC_ACK) {};
+    PORTD = 0xaa;
+    PORTC |= (PC_IRQ + TP2_CODE_RDY);
+    pc_state = PC_KBD_BUSY;
+
+    /* Pin change interrupt setting
+     */
     PCICR = PCICR_INIT;
     PCMSK0 = PCMSK0_INIT;
     PCMSK1 = PCMSK1_INIT;
@@ -639,7 +663,7 @@ void pc_reset_state(void)
     DDRD  = PD_DDR_INIT;
     PORTD = PD_INIT | PD_PUP_INIT;
 
-    /* make sure we clear the IRQ line
+    /* Make sure we clear the IRQ line
      */
     PORTC &= ~PC_IRQ;
     
